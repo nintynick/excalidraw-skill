@@ -1,0 +1,72 @@
+{
+  "skill_name": "excalidraw-author",
+  "evals": [
+    {
+      "id": 1,
+      "name": "design-review-side-by-side",
+      "prompt": "I have 3 pairs of UI mockups under ./test-assets/ : ref-1.png / cur-1.png (Home), ref-2.png / cur-2.png (Settings), ref-3.png / cur-3.png (Profile). The 'ref' versions are the intended design; the 'cur' versions are what we actually built. Build me a single Excalidraw file that places each pair side by side on its own row, with a title per row, red circle annotations on specific differences, and a 'Key Differences' text block to the right of each pair. Each pair has a different layout (ref is stacked rows, cur is a tile grid) so please call that out specifically. Save the output as design-review.excalidraw in the current directory.",
+      "expected_output": "A valid .excalidraw JSON file with 3 rows, each containing 2 embedded images, at least one red ellipse per row, at least one text block per row, and a row title.",
+      "files": [
+        "test-assets/ref-1.png",
+        "test-assets/cur-1.png",
+        "test-assets/ref-2.png",
+        "test-assets/cur-2.png",
+        "test-assets/ref-3.png",
+        "test-assets/cur-3.png"
+      ],
+      "assertions": [
+        {"name": "file_exists", "check": "output file exists at expected path"},
+        {"name": "valid_json", "check": "file parses as JSON without errors"},
+        {"name": "correct_top_level_type", "check": "top-level type field equals 'excalidraw'"},
+        {"name": "has_required_top_level_keys", "check": "file contains 'elements', 'files', and 'appState' keys"},
+        {"name": "embeds_all_six_images", "check": "files dict contains exactly 6 entries (one per input image)"},
+        {"name": "six_image_elements_in_scene", "check": "elements array contains exactly 6 elements of type 'image'"},
+        {"name": "every_image_has_valid_file_id", "check": "every image element's fileId exists as a key in the files dict"},
+        {"name": "at_least_three_red_ellipses", "check": "elements array contains at least 3 ellipse elements with a red-ish stroke color (at least one per row)"},
+        {"name": "at_least_three_row_titles", "check": "contains at least 3 text elements that look like row titles (large font or positioned above image rows)"},
+        {"name": "mentions_stacked_vs_tile_layout_difference", "check": "at least one text element mentions 'row' and at least one mentions 'tile' — the core layout difference"},
+        {"name": "text_uses_helvetica_not_virgil", "check": "majority of text elements use fontFamily 2 (Helvetica) rather than 1 (Virgil) — consistent with SKILL.md guidance"},
+        {"name": "all_required_element_fields_present", "check": "every element in elements[] has id, type, x, y, width, height, angle, seed, version, versionNonce, groupIds, updated — i.e. no missing required fields"}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "architecture-flowchart",
+      "prompt": "Generate an Excalidraw file showing a simple web application architecture. Components: Client (leftmost), API Gateway, three services (Auth, Users, Billing) in a vertical stack, and a Postgres database (rightmost, shared by Users and Billing). Use rectangles for services, arrows for data flow (Client → Gateway → each service; Users → Postgres; Billing → Postgres), and include a title at the top. Save as architecture.excalidraw in the current directory.",
+      "expected_output": "A valid .excalidraw JSON file with at least 6 rectangles, at least 5 arrows, and labeled text for each component.",
+      "files": [],
+      "assertions": [
+        {"name": "file_exists", "check": "output file exists at expected path"},
+        {"name": "valid_json", "check": "file parses as JSON without errors"},
+        {"name": "correct_top_level_type", "check": "top-level type field equals 'excalidraw'"},
+        {"name": "at_least_six_rectangles", "check": "elements contains at least 6 rectangle elements (Client, Gateway, Auth, Users, Billing, Postgres)"},
+        {"name": "at_least_five_arrows", "check": "elements contains at least 5 arrow elements (Client→Gateway, Gateway→{Auth,Users,Billing}, Users→DB, Billing→DB)"},
+        {"name": "all_six_component_labels_present", "check": "text elements contain labels for all 6 components: 'Client', 'Gateway' (or 'API Gateway'), 'Auth', 'Users', 'Billing', 'Postgres'"},
+        {"name": "has_title", "check": "at least one text element with fontSize >= 28 (a title)"},
+        {"name": "all_required_element_fields_present", "check": "every element in elements[] has all required fields (id, seed, version, versionNonce, groupIds, updated, etc.)"},
+        {"name": "arrows_have_points_array", "check": "every arrow element has a points array starting with [0, 0]"}
+      ]
+    },
+    {
+      "id": 3,
+      "name": "annotated-screenshot",
+      "prompt": "Take ./test-assets/ref-1.png and create an Excalidraw file where the image sits in the center and there are exactly 4 red ellipse annotations placed at the four corners of the image (upper-left, upper-right, lower-left, lower-right). Each annotation should have a numbered label (1, 2, 3, 4) on the ellipse and a separate descriptive text label off to the side of the image with an arrow connecting the label back to its ellipse. The descriptions can be placeholder text (e.g., 'Upper-left region', 'Upper-right region', etc.). Save as annotated.excalidraw in the current directory.",
+      "expected_output": "A valid .excalidraw JSON file with 1 embedded image, exactly 4 ellipses, at least 4 descriptive text labels, and at least 4 arrows.",
+      "files": [
+        "test-assets/ref-1.png"
+      ],
+      "assertions": [
+        {"name": "file_exists", "check": "output file exists at expected path"},
+        {"name": "valid_json", "check": "file parses as JSON without errors"},
+        {"name": "correct_top_level_type", "check": "top-level type field equals 'excalidraw'"},
+        {"name": "exactly_one_embedded_image", "check": "files dict contains exactly 1 entry and elements contains exactly 1 image element"},
+        {"name": "exactly_four_ellipses", "check": "elements contains exactly 4 ellipse elements"},
+        {"name": "ellipses_are_red", "check": "all 4 ellipses have a red-ish strokeColor (e.g., '#e03131' or similar)"},
+        {"name": "at_least_eight_text_elements", "check": "elements contains at least 8 text elements (4 numbered labels on ellipses + 4 descriptive labels)"},
+        {"name": "at_least_four_arrows", "check": "elements contains at least 4 arrow elements connecting labels back to ellipses"},
+        {"name": "numbered_labels_present", "check": "text elements include the numerals '1', '2', '3', '4' as standalone labels"},
+        {"name": "all_required_element_fields_present", "check": "every element has required fields"}
+      ]
+    }
+  ]
+}
