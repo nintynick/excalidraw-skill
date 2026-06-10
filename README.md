@@ -67,18 +67,17 @@ scene = Scene()
 # Title
 scene.text(0, 0, "System Architecture", font_size=36, color=Color.BLACK)
 
-# Nodes
-client  = scene.rect(  0, 150, 180, 70, rounded=True,
-                       stroke_color=Color.GREEN, background_color=Color.FILL_GREEN)
-scene.text(50, 175, "Client", font_size=20)
+# Nodes — labels are bound inside the shapes, so they stay centered
+client, _  = scene.node(  0, 150, 180, 70, "Client",
+                        stroke_color=Color.GREEN, background_color=Color.FILL_GREEN)
+gateway, _ = scene.node(300, 150, 180, 70, "API Gateway",
+                        stroke_color=Color.INDIGO, background_color=Color.FILL_INDIGO)
 
-gateway = scene.rect(300, 150, 180, 70, rounded=True,
-                     stroke_color=Color.INDIGO, background_color="#d0bfff")
-scene.text(335, 175, "API Gateway", font_size=20)
+# Edge-anchored, bound arrow — follows the nodes if you drag them
+scene.connect(client, gateway, label="HTTPS")
 
-# Arrow
-scene.arrow(180, 185, 300, 185)
-
+# Lint for accidental collisions, then save
+assert not scene.check_overlaps()
 scene.save("architecture.excalidraw")
 ```
 

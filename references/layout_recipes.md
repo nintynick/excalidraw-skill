@@ -59,22 +59,19 @@ Center node + radial branches. Use simple math to place branches at regular angl
 import math
 
 cx, cy = 500, 400
-center_w, center_h = 220, 80
 branches = ["Research", "Design", "Build", "Ship", "Learn"]
 
-scene.rect(cx - center_w/2, cy - center_h/2, center_w, center_h,
-           rounded=True, background_color=Color.FILL_YELLOW)
-scene.text(cx - 40, cy - 10, "Project", font_size=24)
+hub, _ = scene.node(cx - 110, cy - 40, 220, 80, "Project",
+                    background_color=Color.FILL_YELLOW, stroke_color=Color.ORANGE,
+                    font_size=24)
 
 radius = 280
 for i, label in enumerate(branches):
     angle = 2 * math.pi * i / len(branches)
     bx = cx + radius * math.cos(angle) - 80
     by = cy + radius * math.sin(angle) - 30
-    scene.rect(bx, by, 160, 60, rounded=True, background_color=Color.FILL_BLUE)
-    scene.text(bx + 12, by + 18, label, font_size=18)
-    # Arrow from edge of center to edge of branch (approximate — use center-to-center)
-    scene.arrow(cx, cy, bx + 80, by + 30, end_arrowhead=None)
+    branch, _ = scene.node(bx, by, 160, 60, label, font_size=18)
+    scene.connect(hub, branch, end_arrowhead=None)  # edge-anchored spoke
 ```
 
 ## Process map (BPMN-lite)
@@ -82,21 +79,25 @@ for i, label in enumerate(branches):
 Rectangles for tasks, diamonds for decisions, ellipses for start/end, arrows between.
 
 ```python
-#  ( start ) → [ step 1 ] → [ step 2 ] → < decision > → [ step 3 ] → ( end )
-#                                               ↓ no
-#                                          [ alt path ]
-start = scene.ellipse(0, 100, 80, 40, stroke_color=Color.GREEN, background_color=Color.FILL_GREEN)
-step1 = scene.rect(120, 90, 160, 60, rounded=True)
-scene.text(160, 110, "Submit form", font_size=16)
-decision = scene.diamond(340, 80, 120, 80, stroke_color=Color.ORANGE)
-scene.text(365, 110, "Valid?", font_size=16)
-# arrows
-scene.arrow(80, 120, 120, 120)
-scene.arrow(280, 120, 340, 120)
-scene.arrow(460, 120, 520, 120)
+#  ( start ) → [ step 1 ] → < decision > → [ step 2 ] → ( end )
+#                                ↓ no
+#                           [ alt path ]
+start, _ = scene.node(0, 100, 80, 40, "Start", shape="ellipse",
+                      stroke_color=Color.GREEN, background_color=Color.FILL_GREEN,
+                      font_size=14)
+step1, _ = scene.node(160, 90, 160, 60, "Submit form", font_size=16)
+decision, _ = scene.node(400, 80, 130, 80, "Valid?", shape="diamond",
+                         stroke_color=Color.ORANGE, background_color=Color.FILL_ORANGE,
+                         font_size=16)
+alt, _ = scene.node(400, 240, 160, 60, "Show errors", font_size=16,
+                    stroke_color=Color.RED, background_color=Color.FILL_RED)
+
+scene.connect(start, step1)
+scene.connect(step1, decision)
+scene.connect(decision, alt, label="no")   # vertical drop, edge-anchored
 ```
 
-Position your nodes first, then draw arrows between their edges. Computing exact edge points is fiddly — for generated diagrams, shooting from center to center is usually fine because arrows auto-route to the edge visually.
+Position your nodes first, then `connect()` them — it anchors on the facing edges and binds the arrows so the diagram survives manual rearranging. Use `elbow=True` (or `arrow_path` with explicit waypoints) when a straight line would cut through another node.
 
 ## Swimlane diagram
 
@@ -156,3 +157,5 @@ scene.text(notes_x, 50, bullets, font_size=16, width=600)
 - **Title every section.** A 32px blue heading before each row or region dramatically improves scannability for ~10 characters of text per heading.
 - **Scale images before placing.** Full-resolution screenshots dwarf everything else. Downscale to 40-60% of native size unless the image is small.
 - **Draw your annotations AFTER placing the thing you're annotating.** Element draw order matters — annotations need to render on top of their targets.
+- **Wrap paragraph text.** Any text longer than a short label gets `width=` so it wraps into a column instead of one huge line.
+- **Lint before saving.** `scene.check_overlaps()` catches text/shape collisions that look fine in coordinates but broken on canvas.

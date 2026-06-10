@@ -12,9 +12,9 @@ An .excalidraw file is a single JSON document with this top-level shape:
     }
 
 Elements are typed: image, rectangle, ellipse, diamond, text, arrow, line.
-Each has required fields (id, seed, version, versionNonce, etc.) that this
-module fills in automatically so the caller only cares about geometry and
-styling.
+Each has required fields (id, seed, version, versionNonce, index, etc.) that
+this module fills in automatically so the caller only cares about geometry
+and styling.
 
 The library has no third-party dependencies — PNG and JPEG dimensions are
 read by parsing the file headers with the standard library. This keeps the
@@ -22,13 +22,18 @@ skill portable across any Python 3.8+ environment.
 
 Usage is documented in the project SKILL.md. Quick example:
 
-    from excalidraw import Scene, load_image
+    from excalidraw import Scene, Color
 
     scene = Scene()
     file_id, w, h = scene.add_image_file("screenshot.png")
     scene.image(100, 100, w // 4, h // 4, file_id)
     scene.ellipse(180, 160, 60, 40, stroke_color="#e03131", stroke_width=4)
     scene.text(260, 170, "Click target", color="#e03131")
+    a, _ = scene.node(500, 100, 180, 70, "API Gateway")
+    b, _ = scene.node(800, 100, 180, 70, "Auth Service")
+    scene.connect(a, b)
+    for warning in scene.check_overlaps():
+        print("LAYOUT WARNING:", warning)
     scene.save("output.excalidraw")
 """
 
@@ -39,6 +44,7 @@ import hashlib
 import json
 import os
 import struct
+import textwrap
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -146,7 +152,36 @@ _FONT_FAMILY = {
     "virgil": 1,      # default hand-drawn
     "helvetica": 2,   # sans
     "cascadia": 3,    # mono
+    "assistant": 4,   # newer sans
 }
+
+# Average glyph width as a fraction of font size, per family. Rough but
+# consistent with how Excalidraw measures these faces.
+_CHAR_W = {1: 0.6, 2: 0.55, 3: 0.6, 4: 0.55}
+
+_B62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+def _frac_index(n: int) -> str:
+    """n-th key of Excalidraw's fractional-index integer sequence.
+
+    Produces 'a0'..'az', then 'b00'..'bzz', 'c000'.., which sort
+    lexicographically in insertion order — the same scheme the
+    fractional-indexing library uses for generateKeyBetween(prev, null).
+    """
+    length = 1
+    prefix = 0
+    capacity = 62
+    while n >= capacity:
+        n -= capacity
+        prefix += 1
+        length += 1
+        capacity = 62 ** length
+    digits = []
+    for _ in range(length):
+        digits.append(_B62[n % 62])
+        n //= 62
+    return chr(ord("a") + prefix) + "".join(reversed(digits))
 
 
 def _rand_nonce() -> int:
@@ -181,6 +216,34 @@ def _common(**overrides: Any) -> Dict[str, Any]:
     return base
 
 
+def _bbox(el: Dict[str, Any]) -> Tuple[float, float, float, float]:
+    x, y = el.get("x", 0), el.get("y", 0)
+    w, h = el.get("width", 0), el.get("height", 0)
+    if w < 0:
+        x, w = x + w, -w
+    if h < 0:
+        y, h = y + h, -h
+    return x, y, w, h
+
+
+def _edge_point(box: Tuple[float, float, float, float],
+                tx: float, ty: float) -> Tuple[float, float]:
+    """Point where the segment from the box's center toward (tx, ty) exits the box."""
+    x, y, w, h = box
+    cx, cy = x + w / 2, y + h / 2
+    dx, dy = tx - cx, ty - cy
+    if dx == 0 and dy == 0:
+        return cx, cy
+    # Scale factor to reach the boundary along each axis
+    candidates = []
+    if dx != 0:
+        candidates.append((w / 2) / abs(dx))
+    if dy != 0:
+        candidates.append((h / 2) / abs(dy))
+    t = min(candidates)
+    return cx + dx * t, cy + dy * t
+
+
 @dataclass
 class Scene:
     """Mutable collection of elements and embedded files.
@@ -194,10 +257,17 @@ class Scene:
     background: str = "#ffffff"
     _id_counter: int = 0
 
-    # ---- ID helper ----
+    # ---- internal helpers ----
     def _next_id(self, prefix: str = "el") -> str:
         self._id_counter += 1
         return f"{prefix}-{self._id_counter}"
+
+    def _add(self, el: Dict[str, Any]) -> Dict[str, Any]:
+        # Fractional ordering index — current Excalidraw exports carry one
+        # per element; assigning it here keeps z-order stable on load.
+        el["index"] = _frac_index(len(self.elements))
+        self.elements.append(el)
+        return el
 
     # ---- File embedding ----
     def add_image_file(self, path: str) -> Tuple[str, int, int]:
@@ -239,8 +309,7 @@ class Scene:
             "fileId": file_id,
             "scale": [1, 1],
         }
-        self.elements.append(el)
-        return el
+        return self._add(el)
 
     def rect(
         self,
@@ -267,8 +336,7 @@ class Scene:
                 roundness={"type": 3} if rounded else None,
             ),
         }
-        self.elements.append(el)
-        return el
+        return self._add(el)
 
     def ellipse(
         self,
@@ -291,8 +359,7 @@ class Scene:
                 strokeWidth=stroke_width,
             ),
         }
-        self.elements.append(el)
-        return el
+        return self._add(el)
 
     def diamond(
         self,
@@ -315,8 +382,7 @@ class Scene:
                 strokeWidth=stroke_width,
             ),
         }
-        self.elements.append(el)
-        return el
+        return self._add(el)
 
     def text(
         self,
@@ -330,10 +396,25 @@ class Scene:
         align: str = "left",
         width: Optional[float] = None,
     ) -> Dict[str, Any]:
-        lines = content.split("\n")
-        # Rough heuristic for width if not supplied — Excalidraw re-measures
-        # on load, so this just needs to be in the ballpark.
-        approx_w = width or max(len(line) for line in lines) * font_size * 0.55
+        """Free-floating text.
+
+        With `width`, the text is word-wrapped to that width and the element
+        is marked autoResize=false so Excalidraw keeps the column instead of
+        re-measuring it back into one long line. Without `width`, the text
+        renders at its natural size (manual newlines are respected either way).
+        """
+        family = _FONT_FAMILY.get(font, 2)
+        char_w = _CHAR_W.get(family, 0.55) * font_size
+        if width is not None:
+            max_chars = max(1, int(width / char_w))
+            wrapped_lines: List[str] = []
+            for para in content.split("\n"):
+                wrapped_lines.extend(textwrap.wrap(para, max_chars) or [""])
+            rendered = "\n".join(wrapped_lines)
+        else:
+            rendered = content
+        lines = rendered.split("\n")
+        approx_w = width or max(len(line) for line in lines) * char_w
         approx_h = len(lines) * font_size * 1.25
         el = {
             "id": self._next_id("txt"),
@@ -343,17 +424,81 @@ class Scene:
             "height": approx_h,
             **_common(strokeColor=color),
             "fontSize": font_size,
-            "fontFamily": _FONT_FAMILY.get(font, 2),
+            "fontFamily": family,
             "textAlign": align,
             "verticalAlign": "top",
             "baseline": font_size - 2,
             "containerId": None,
             "originalText": content,
-            "text": content,
+            "autoResize": width is None,
+            "text": rendered,
             "lineHeight": 1.25,
         }
-        self.elements.append(el)
-        return el
+        return self._add(el)
+
+    def node(
+        self,
+        x: float,
+        y: float,
+        w: float,
+        h: float,
+        label: str,
+        *,
+        shape: str = "rectangle",
+        stroke_color: str = "#1971c2",
+        background_color: str = "#a5d8ff",
+        text_color: str = "#1e1e1e",
+        font_size: int = 20,
+        font: str = "helvetica",
+        stroke_width: float = 2,
+        rounded: bool = True,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """A shape with a label *bound inside it* — returns (container, text).
+
+        The label is centered by Excalidraw itself (containerId/boundElements
+        binding), so it stays centered even if the user resizes or renames the
+        node. Use this instead of eyeballing text coordinates over a rect.
+        Connect nodes with `scene.connect(container_a, container_b)`.
+        """
+        maker = {"rectangle": self.rect, "ellipse": self.ellipse,
+                 "diamond": self.diamond}[shape]
+        if shape == "rectangle":
+            container = self.rect(x, y, w, h, stroke_color=stroke_color,
+                                  background_color=background_color,
+                                  stroke_width=stroke_width, rounded=rounded)
+        else:
+            container = maker(x, y, w, h, stroke_color=stroke_color,
+                              background_color=background_color,
+                              stroke_width=stroke_width)
+        family = _FONT_FAMILY.get(font, 2)
+        char_w = _CHAR_W.get(family, 0.55) * font_size
+        lines = label.split("\n")
+        tw = min(w - 10, max(len(l) for l in lines) * char_w)
+        th = len(lines) * font_size * 1.25
+        text_el = {
+            "id": self._next_id("txt"),
+            "type": "text",
+            "x": x + (w - tw) / 2,
+            "y": y + (h - th) / 2,
+            "width": tw,
+            "height": th,
+            **_common(strokeColor=text_color),
+            "fontSize": font_size,
+            "fontFamily": family,
+            "textAlign": "center",
+            "verticalAlign": "middle",
+            "baseline": font_size - 2,
+            "containerId": container["id"],
+            "originalText": label,
+            "autoResize": True,
+            "text": label,
+            "lineHeight": 1.25,
+        }
+        self._add(text_el)
+        container["boundElements"] = (container["boundElements"] or []) + [
+            {"type": "text", "id": text_el["id"]}
+        ]
+        return container, text_el
 
     def arrow(
         self,
@@ -367,21 +512,109 @@ class Scene:
         start_arrowhead: Optional[str] = None,
         end_arrowhead: str = "arrow",
     ) -> Dict[str, Any]:
+        return self.arrow_path([(x1, y1), (x2, y2)],
+                               stroke_color=stroke_color,
+                               stroke_width=stroke_width,
+                               start_arrowhead=start_arrowhead,
+                               end_arrowhead=end_arrowhead)
+
+    def arrow_path(
+        self,
+        points: List[Tuple[float, float]],
+        *,
+        stroke_color: str = "#1e1e1e",
+        stroke_width: float = 2,
+        start_arrowhead: Optional[str] = None,
+        end_arrowhead: str = "arrow",
+    ) -> Dict[str, Any]:
+        """Multi-point arrow through absolute canvas coordinates.
+
+        Use for elbow/L-shaped routing around obstacles:
+        `scene.arrow_path([(0, 0), (120, 0), (120, 80)])`.
+        """
+        if len(points) < 2:
+            raise ValueError("arrow_path needs at least 2 points")
+        x0, y0 = points[0]
+        rel = [[px - x0, py - y0] for px, py in points]
+        xs = [p[0] for p in rel]
+        ys = [p[1] for p in rel]
         el = {
             "id": self._next_id("arr"),
             "type": "arrow",
-            "x": x1, "y": y1,
-            "width": x2 - x1, "height": y2 - y1,
+            "x": x0, "y": y0,
+            "width": max(xs) - min(xs), "height": max(ys) - min(ys),
             **_common(strokeColor=stroke_color, strokeWidth=stroke_width),
-            "points": [[0.0, 0.0], [x2 - x1, y2 - y1]],
+            "points": rel,
             "lastCommittedPoint": None,
             "startBinding": None,
             "endBinding": None,
             "startArrowhead": start_arrowhead,
             "endArrowhead": end_arrowhead,
         }
-        self.elements.append(el)
-        return el
+        return self._add(el)
+
+    def connect(
+        self,
+        a: Dict[str, Any],
+        b: Dict[str, Any],
+        *,
+        stroke_color: str = "#1e1e1e",
+        stroke_width: float = 2,
+        start_arrowhead: Optional[str] = None,
+        end_arrowhead: str = "arrow",
+        elbow: bool = False,
+        bind: bool = True,
+        gap: float = 6,
+        label: Optional[str] = None,
+        label_size: int = 14,
+        label_color: str = "#868e96",
+    ) -> Dict[str, Any]:
+        """Arrow from element `a` to element `b`, anchored edge-to-edge.
+
+        Pass the element dicts returned by rect()/ellipse()/node()[0]. The
+        anchor points are computed on the facing edges (never the centers),
+        and with bind=True the arrow is bound to both shapes so it follows
+        them when the user drags nodes around. elbow=True routes an L-shaped
+        path (horizontal then vertical) instead of a straight line — useful
+        when a straight shot would cross other nodes.
+        """
+        ba, bb = _bbox(a), _bbox(b)
+        ca = (ba[0] + ba[2] / 2, ba[1] + ba[3] / 2)
+        cb = (bb[0] + bb[2] / 2, bb[1] + bb[3] / 2)
+        if elbow:
+            # Leave a horizontally, arrive at b vertically (or the reverse,
+            # whichever matches the dominant direction).
+            if abs(cb[0] - ca[0]) >= abs(cb[1] - ca[1]):
+                corner = (cb[0], ca[1])
+                start = _edge_point(ba, corner[0], corner[1])
+                end = _edge_point(bb, corner[0], corner[1])
+            else:
+                start = _edge_point(ba, ca[0], cb[1])
+                corner = (ca[0], cb[1])
+                end = _edge_point(bb, corner[0], corner[1])
+            pts = [start, corner, end]
+        else:
+            start = _edge_point(ba, *cb)
+            end = _edge_point(bb, *ca)
+            pts = [start, end]
+        arrow = self.arrow_path(pts, stroke_color=stroke_color,
+                                stroke_width=stroke_width,
+                                start_arrowhead=start_arrowhead,
+                                end_arrowhead=end_arrowhead)
+        if bind:
+            arrow["startBinding"] = {"elementId": a["id"], "focus": 0, "gap": gap}
+            arrow["endBinding"] = {"elementId": b["id"], "focus": 0, "gap": gap}
+            for shape in (a, b):
+                bound = shape["boundElements"] or []
+                bound.append({"type": "arrow", "id": arrow["id"]})
+                shape["boundElements"] = bound
+        if label:
+            mx = (pts[0][0] + pts[-1][0]) / 2
+            my = (pts[0][1] + pts[-1][1]) / 2
+            char_w = _CHAR_W[2] * label_size
+            self.text(mx - len(label) * char_w / 2, my - label_size * 1.6,
+                      label, font_size=label_size, color=label_color)
+        return arrow
 
     def line(
         self,
@@ -406,8 +639,52 @@ class Scene:
             "startArrowhead": None,
             "endArrowhead": None,
         }
-        self.elements.append(el)
-        return el
+        return self._add(el)
+
+    # ---- Layout QA ----
+    def check_overlaps(self) -> List[str]:
+        """Lint the scene for accidental collisions. Returns warning strings.
+
+        Checks free text vs free text, and partial shape-on-shape overlap
+        (containment is fine — that's how grouping boxes work). Bound labels
+        and annotation ellipses are skipped: those overlap their containers
+        by design. Run this before save() and fix anything it reports.
+        """
+
+        def overlap(b1, b2):
+            ix = max(0.0, min(b1[0] + b1[2], b2[0] + b2[2]) - max(b1[0], b2[0]))
+            iy = max(0.0, min(b1[1] + b1[3], b2[1] + b2[3]) - max(b1[1], b2[1]))
+            return ix * iy
+
+        def contains(outer, inner, tol=2):
+            return (inner[0] >= outer[0] - tol and inner[1] >= outer[1] - tol
+                    and inner[0] + inner[2] <= outer[0] + outer[2] + tol
+                    and inner[1] + inner[3] <= outer[1] + outer[3] + tol)
+
+        warnings = []
+        free_texts = [e for e in self.elements
+                      if e["type"] == "text" and not e.get("containerId")]
+        for i in range(len(free_texts)):
+            for j in range(i + 1, len(free_texts)):
+                b1, b2 = _bbox(free_texts[i]), _bbox(free_texts[j])
+                ia = overlap(b1, b2)
+                m = min(b1[2] * b1[3], b2[2] * b2[3])
+                if m > 0 and ia > 0.15 * m:
+                    warnings.append(
+                        f"text overlap: {free_texts[i]['text'][:30]!r} and "
+                        f"{free_texts[j]['text'][:30]!r}"
+                    )
+        shapes = [e for e in self.elements
+                  if e["type"] in ("rectangle", "diamond")]
+        for i in range(len(shapes)):
+            for j in range(i + 1, len(shapes)):
+                b1, b2 = _bbox(shapes[i]), _bbox(shapes[j])
+                if (overlap(b1, b2) > 4
+                        and not contains(b1, b2) and not contains(b2, b1)):
+                    warnings.append(
+                        f"shape overlap: {shapes[i]['id']} and {shapes[j]['id']}"
+                    )
+        return warnings
 
     # ---- Serialization ----
     def to_dict(self) -> Dict[str, Any]:
@@ -454,17 +731,30 @@ class Color:
     GRAY = "#868e96"
     LIGHT_GRAY = "#ced4da"
 
-    # Semi-transparent fills
+    # Light fill variants (Excalidraw's default background swatches)
     FILL_RED = "#ffc9c9"
+    FILL_ORANGE = "#ffd8a8"
     FILL_YELLOW = "#ffec99"
     FILL_GREEN = "#b2f2bb"
+    FILL_TEAL = "#96f2d7"
     FILL_BLUE = "#a5d8ff"
+    FILL_INDIGO = "#d0bfff"
+    FILL_PURPLE = "#eebefa"
+    FILL_PINK = "#fcc2d7"
+    FILL_GRAY = "#ced4da"
 
 
 if __name__ == "__main__":
-    # Smoke test — build a tiny scene and write it to stdout.
+    # Smoke test — build a tiny scene exercising the helpers.
     s = Scene()
     s.text(10, 10, "Hello, Excalidraw", font_size=32, color=Color.BLUE)
-    s.rect(10, 60, 200, 80, stroke_color=Color.GREEN, rounded=True)
-    s.ellipse(50, 80, 120, 40, stroke_color=Color.RED)
+    a, _ = s.node(10, 80, 200, 80, "Service A")
+    b, _ = s.node(400, 80, 200, 80, "Service B", background_color=Color.FILL_GREEN,
+                  stroke_color=Color.GREEN)
+    s.connect(a, b, label="gRPC")
+    s.text(10, 220, "A long paragraph that should wrap into a neat column "
+                    "instead of rendering as one enormous line.", width=260,
+           font_size=14)
+    warnings = s.check_overlaps()
+    print("overlap warnings:", warnings or "none")
     print(s.to_json()[:200] + "...")

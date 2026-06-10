@@ -54,9 +54,20 @@ A **Scene** is a list of elements drawn in order (later elements draw on top of 
 | `scene.rect(x, y, w, h, ...)` | rectangle | `stroke_color`, `background_color`, `rounded` |
 | `scene.ellipse(x, y, w, h, ...)` | ellipse / circle | `stroke_color`, `stroke_width` (default red for annotations) |
 | `scene.diamond(x, y, w, h, ...)` | diamond (decision nodes) | `stroke_color` |
-| `scene.text(x, y, content, ...)` | text label or block | `font_size`, `font` (`"helvetica"` / `"virgil"` / `"cascadia"`), `color`, `width` for wrapping |
+| `scene.text(x, y, content, ...)` | text label or block | `font_size`, `font` (`"helvetica"` / `"virgil"` / `"cascadia"`), `color`, `width` to word-wrap into a column |
+| `scene.node(x, y, w, h, label, ...)` | shape + label bound inside it → `(container, text)` | `shape` (`"rectangle"`/`"ellipse"`/`"diamond"`), `stroke_color`, `background_color`, `font_size` |
+| `scene.connect(a, b, ...)` | edge-anchored, bound arrow between two elements | `label`, `elbow=True` for L-routing, `end_arrowhead` |
 | `scene.arrow(x1, y1, x2, y2, ...)` | arrow | `stroke_color`, `end_arrowhead="arrow"` |
+| `scene.arrow_path([(x, y), ...])` | multi-point arrow (manual elbow routing) | same styling args as `arrow` |
 | `scene.line(x1, y1, x2, y2, ...)` | line | `stroke_color` |
+| `scene.check_overlaps()` | list of layout warnings | run before `save()`, fix what it reports |
+
+Two of these deserve emphasis because they remove whole classes of layout bugs:
+
+- **`node()`** creates a shape with its label *bound inside it* (Excalidraw's own containment mechanism), so the label is exactly centered — no `len(label) * font_size * 0.55` guesswork — and stays centered if the user resizes or renames the node.
+- **`connect(a, b)`** takes the element dicts returned by `node()`/`rect()`/etc., anchors the arrow on the facing edges (never shape centers), and binds it to both shapes so it follows them when dragged. Pass `elbow=True` when a straight line would cut through other nodes.
+
+**Text wrapping is real**: `scene.text(..., width=600)` word-wraps the content to that column width and marks the element so Excalidraw preserves the column on load. Without `width`, text renders at its natural single-line width — so for paragraph-length notes, always pass `width`.
 
 To embed an image:
 
@@ -130,21 +141,21 @@ Use for anything where nodes connect with arrows. Conventions:
 - **Diamonds** = decisions, branch points
 - **Ellipses** = start/end markers
 - **Arrows** = flow, data, dependencies
-- Label nodes with `scene.text` centered *inside* the shape (compute x as `node_x + node_w/2 - text_w/2`; text width is roughly `len(label) * font_size * 0.55`)
+
+The library does the fiddly parts — bound labels and edge-anchored arrows:
 
 ```python
-def node(scene, label, x, y, w=180, h=70):
-    scene.rect(x, y, w, h, stroke_color=Color.BLUE, background_color=Color.FILL_BLUE, rounded=True)
-    # Center the label inside the rect
-    approx_w = len(label) * 20 * 0.55
-    scene.text(x + (w - approx_w) / 2, y + h/2 - 12, label, font_size=20)
+client, _  = scene.node(0, 150, 180, 70, "Client",
+                        stroke_color=Color.GREEN, background_color=Color.FILL_GREEN)
+gateway, _ = scene.node(300, 150, 180, 70, "API Gateway")
+auth, _    = scene.node(600, 50, 180, 70, "Auth Service")
 
-def connect(scene, a, b):
-    # Connect right-edge of a to left-edge of b (simple case)
-    scene.arrow(a[0] + a[2], a[1] + a[3]/2, b[0], b[1] + b[3]/2)
+scene.connect(client, gateway, label="HTTPS")
+scene.connect(gateway, auth)                  # straight, edge to edge
+scene.connect(gateway, auth, elbow=True)      # L-shaped, when straight would cross nodes
 ```
 
-For arrows that route through multiple points, just draw several connected arrows or use `line` segments — Excalidraw arrows are straight, not splines.
+Layout the nodes on a coarse grid (columns ~300px apart, rows ~100px apart for 70px-tall nodes) so arrows have room to travel between shapes. For fully manual routing use `scene.arrow_path([(x, y), ...])` with explicit waypoints.
 
 ### Pattern 3: Annotated screenshot
 
@@ -170,6 +181,22 @@ for c in callouts:
     scene.arrow(text_x - 10, c["cy"] + 8, c["cx"] + 30, c["cy"], stroke_color=Color.RED)
 ```
 
+## Before saving: lint the layout
+
+Call `scene.check_overlaps()` right before `scene.save()`. It flags free-floating
+text that collides with other text, and shapes that partially overlap (containment
+and bound labels are fine and not flagged). These are exactly the bugs that look
+correct in code and broken on canvas — coordinates that seemed fine in your head
+but collide once real text widths apply. If it returns warnings, adjust the layout
+and re-check; only save once it's clean (or you've confirmed an overlap is
+intentional, e.g. a deliberate collage).
+
+```python
+for warning in scene.check_overlaps():
+    print("LAYOUT WARNING:", warning)
+scene.save("output.excalidraw")
+```
+
 ## What to hand back to the user
 
 After writing the file:
@@ -186,11 +213,15 @@ Example closing message:
 
 ## Common mistakes to avoid
 
-- **Don't forget required fields.** Every element needs `seed`, `version`, `versionNonce`, `groupIds`, `updated`, `boundElements`, etc. The library handles this — don't try to build element dicts manually unless you really know the schema.
+- **Don't forget required fields.** Every element needs `seed`, `version`, `versionNonce`, `groupIds`, `updated`, `boundElements`, `index`, etc. The library handles this — don't try to build element dicts manually unless you really know the schema.
+- **Don't write paragraph text without `width`.** Unwrapped text renders at its natural single-line width — a 200-character diff note becomes a 1,700px-wide line that blows past your layout. Pass `width=` for anything longer than a short label; the library wraps it and pins the column.
+- **Don't hand-center labels over shapes.** Use `scene.node()` — bound labels are centered by Excalidraw itself. Hand-computed centering drifts because real glyph widths differ from any estimate.
+- **Don't aim arrows at shape centers.** Use `scene.connect(a, b)` — it anchors on facing edges and binds the arrow to both shapes. Center-to-center arrows visually stab into the shape body and detach when the user rearranges.
 - **Don't overload localStorage.** This skill writes *files* for the user to open via File → Open. It does not try to inject scenes into a live excalidraw.com tab via localStorage or IndexedDB. That path exists but isn't our job — always produce a file.
 - **Don't skip dimension lookups.** Always use `scene.add_image_file()` to get real pixel dimensions rather than guessing. Layouts that assume all images are the same size break when they aren't.
 - **Don't use `roughness=1` by default.** The hand-drawn look is cute but hurts legibility at small sizes. Default smooth (which the library provides) and only opt into sketchy when explicitly asked.
 - **Don't use Virgil (default hand-drawn font) for body text.** Fine for a title, hard to read for 14px diff notes. Use `font="helvetica"` for anything non-display.
+- **Don't skip the lint.** `scene.check_overlaps()` before `save()` catches the collisions you can't see from coordinates alone.
 
 ## Additional references
 

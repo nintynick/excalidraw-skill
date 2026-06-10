@@ -49,6 +49,7 @@ The `.excalidraw` file format is a JSON document. The library in `scripts/excali
   "opacity": 100,              // 0-100
   "groupIds": [],              // array of group IDs this element belongs to
   "frameId": null,             // ID of the frame containing this element, or null
+  "index": "a0",               // fractional z-order index ("a0", "a1", ... lexicographic)
   "roundness": null,           // null or {type: 2 or 3} for rounded corners
   "seed": 12345,               // random int, used for deterministic roughness
   "versionNonce": 67890,       // random int, versioning nonce
@@ -94,12 +95,13 @@ No extra required fields beyond the common ones. For rounded rectangles set `rou
   "baseline": 18,               // usually fontSize - 2
   "containerId": null,          // ID of container element if text is bound inside a shape
   "originalText": "...",        // text as-entered (before wrapping)
+  "autoResize": true,           // false = keep width fixed, wrap to it; true = natural size
   "text": "...",                // text as-rendered (may have wrapping inserted)
   "lineHeight": 1.25
 }
 ```
 
-Excalidraw re-measures text dimensions on load, so `width` and `height` don't need to be perfectly accurate — reasonable estimates are fine. The library uses `len(line) * fontSize * 0.55` as a rough width estimate.
+Excalidraw re-measures text dimensions on load. With `autoResize: true` (the default) that means your `width` is *discarded* and the text renders at its natural single-line width — long strings explode out of your layout. To keep a fixed-width wrapped column, set `autoResize: false`, set `width`, and pre-insert newlines into `text` (keep the unwrapped string in `originalText`). The library's `scene.text(..., width=...)` does all three. Newer font ids also exist (5=Excalifont, 6=Nunito, 7=Lilita One, 8=Comic Shanns); 1-4 remain supported and are the safe choice for generated files.
 
 **Text bound inside a shape:** to put text "inside" a rectangle so it moves with the rectangle, set the text's `containerId` to the rectangle's `id` and add `{type: "text", id: <textId>}` to the rectangle's `boundElements` array. This is optional — free-floating text works fine for most diagrams.
 
@@ -126,7 +128,7 @@ Excalidraw re-measures text dimensions on load, so `width` and `height` don't ne
 "startBinding": {"elementId": "<shape-id>", "focus": 0, "gap": 5},
 "endBinding": {"elementId": "<other-id>", "focus": 0, "gap": 5}
 ```
-The library doesn't bind by default — arrows are positioned statically, which is fine for generated diagrams that you don't expect the user to manually rearrange much.
+and add `{"type": "arrow", "id": "<arrow-id>"}` to each bound shape's `boundElements` array — the binding is two-sided. The library's `scene.connect(a, b)` does both sides for you (plus edge anchoring); plain `scene.arrow()` stays unbound/static.
 
 ### line
 
